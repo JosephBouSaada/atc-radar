@@ -1,0 +1,19 @@
+[Unit]
+Description=ATC Radar e-Paper display
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/atc-radar
+# Set your config here, e.g.:
+# Environment=ATC_EPD_PANEL=epd2in13_V4
+# Environment=ATC_RADIUS_KM=60
+# Environment=GOOGLE_GEOLOCATION_KEY=your_key
+ExecStart=/home/pi/atc-radar/.venv/bin/python -m atc_radar.main
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

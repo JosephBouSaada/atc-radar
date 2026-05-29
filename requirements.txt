@@ -1,0 +1,9 @@
+requests>=2.25
+Pillow>=9.0
+
+# On the Raspberry Pi, install the Waveshare e-Paper driver too. It is not on
+# PyPI; clone it from Waveshare and copy the python lib, or:
+#   pip install waveshare-epd  (community mirror)
+# plus the SPI deps:
+#   RPi.GPIO
+#   spidev

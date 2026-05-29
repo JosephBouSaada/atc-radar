@@ -1,0 +1,6 @@
+.venv/
+__pycache__/
+*.pyc
+atc_radar_frame.png
+e-Paper/
+.DS_Store
