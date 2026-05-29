@@ -1,7 +1,15 @@
-"""Render the radar frame and push it to a Waveshare e-Paper panel.
+"""Render the radar frame and push it to a Waveshare 1.44" LCD HAT (ST7735S).
 
-Falls back to writing a PNG + printing a text summary when the Waveshare
-library or hardware isn't present, so the whole pipeline runs on a laptop.
+Hardware reference: https://www.waveshare.com/wiki/1.44inch_LCD_HAT
+Pinout used by this board:
+    LCD_CS  -> CE0  (handled by SPI device select)
+    LCD_DC  -> GPIO 25
+    LCD_RST -> GPIO 27
+    LCD_BL  -> GPIO 24  (active-high backlight enable)
+    Joystick + 3 buttons on GPIO 5/6/13/19/26/16/20/21 (not used here).
+
+Falls back to writing a PNG when luma.lcd or the hardware isn't reachable,
+so the same pipeline runs on a laptop.
 """
 
 import logging
@@ -14,18 +22,19 @@ from . import config
 
 log = logging.getLogger("atc.display")
 
-# Approx resolutions for dev mode when the real panel can't report its size.
-_PANEL_SIZES = {
-    "epd2in13": (250, 122), "epd2in13_v2": (250, 122),
-    "epd2in13_v3": (250, 122), "epd2in13_v4": (250, 122),
-    "epd2in7": (264, 176), "epd2in7_v2": (264, 176),
-    "epd2in9": (296, 128), "epd2in9_v2": (296, 128),
-    "epd4in2": (400, 300), "epd7in5_v2": (800, 480),
-}
+# 128x128 panel with a small offset because the ST7735S framebuffer is 132x132.
+_LCD_W = 128
+_LCD_H = 128
+_LCD_HOFFSET = 2
+_LCD_VOFFSET = 1
+_LCD_RST_GPIO = 27
+_LCD_DC_GPIO = 25
+_LCD_BL_GPIO = 24
 
 
 def _font(size):
     for path in (
+        "/usr/share/fonts/truetype/dejavu/DejaVuSansMono-Bold.ttf",
         "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
         "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
         "/System/Library/Fonts/Menlo.ttc",
@@ -41,105 +50,110 @@ def _font(size):
 class Display:
     def __init__(self):
         self.mode = config.DISPLAY_MODE
-        self.epd = None
-        self.width, self.height = _PANEL_SIZES.get(config.EPD_PANEL.lower(), (250, 122))
+        self.device = None
+        self.width, self.height = _LCD_W, _LCD_H
 
         if self.mode in ("auto", "hardware"):
             try:
-                from waveshare_epd import __dict__ as _wsd  # noqa: F401
-                mod = __import__(
-                    f"waveshare_epd.{config.EPD_PANEL}", fromlist=["EPD"]
+                from luma.core.interface.serial import spi
+                from luma.lcd.device import st7735
+                serial = spi(
+                    port=0, device=0,
+                    gpio_DC=_LCD_DC_GPIO, gpio_RST=_LCD_RST_GPIO,
                 )
-                self.epd = mod.EPD()
-                self.epd.init()
-                self.epd.Clear(0xFF)
-                # Panel reports its own native dimensions.
-                self.width, self.height = self.epd.width, self.epd.height
+                self.device = st7735(
+                    serial,
+                    width=_LCD_W, height=_LCD_H,
+                    h_offset=_LCD_HOFFSET, v_offset=_LCD_VOFFSET,
+                    bgr=True,
+                    rotate=config.DISPLAY_ROTATE // 90,
+                    gpio_LIGHT=_LCD_BL_GPIO,
+                    active_low=False,
+                )
+                self.device.backlight(True)
+                self.width, self.height = self.device.width, self.device.height
                 self.mode = "hardware"
-                log.info("Waveshare %s ready (%dx%d)",
-                         config.EPD_PANEL, self.width, self.height)
-            except Exception as e:  # ImportError or RuntimeError from GPIO
+                log.info("ST7735S LCD ready (%dx%d)", self.width, self.height)
+            except Exception as e:
                 if self.mode == "hardware":
                     raise
-                log.warning("No e-Paper hardware (%s); using dev PNG renderer", e)
+                log.warning("No LCD hardware (%s); using dev PNG renderer", e)
                 self.mode = "dev"
-
-        # e-Paper buffers are landscape; many 2.13" panels are 122x250 native
-        # and rendered rotated. We draw in landscape (w >= h).
-        if self.height > self.width:
-            self.width, self.height = self.height, self.width
 
     # -- drawing -------------------------------------------------------------
     def _draw_frame(self, loc, aircraft):
         W, H = self.width, self.height
-        img = Image.new("1", (W, H), 255)  # 1-bit, white background
+        img = Image.new("RGB", (W, H), (0, 0, 0))
         d = ImageDraw.Draw(img)
 
-        f_small = _font(max(9, H // 13))
-        f_tiny = _font(max(8, H // 15))
+        f_hdr = _font(10)
+        f_body = _font(9)
 
-        # Radar occupies a square on the left.
-        radar = min(H, W // 2) - 4
-        cx, cy = 2 + radar // 2, H // 2
-        R = radar // 2 - 1
+        # Header: count + UTC time.
+        now = datetime.now(timezone.utc).strftime("%H:%MZ")
+        d.text((1, 0), f"ATC {len(aircraft):2d}ac", font=f_hdr, fill=(0, 255, 255))
+        d.text((W - 38, 0), now, font=f_hdr, fill=(0, 255, 255))
 
-        # Range rings + crosshair.
-        for frac in (0.5, 1.0):
-            rr = int(R * frac)
-            d.ellipse([cx - rr, cy - rr, cx + rr, cy + rr], outline=0)
-        d.line([cx - R, cy, cx + R, cy], fill=0)
-        d.line([cx, cy - R, cx, cy + R], fill=0)
+        # Radar area — square, fills middle of screen.
+        radar_top = 12
+        radar_bot = H - 36   # leave 36px at bottom for the list
+        R = (radar_bot - radar_top) // 2
+        cx, cy = W // 2, radar_top + R
 
-        # Blips: map (bearing, distance) -> screen. North is up.
+        # Range rings (50% and 100%) + crosshair, dim green.
+        ring = (0, 100, 0)
+        d.ellipse([cx - R, cy - R, cx + R, cy + R], outline=ring)
+        d.ellipse([cx - R // 2, cy - R // 2, cx + R // 2, cy + R // 2], outline=ring)
+        d.line([cx - R, cy, cx + R, cy], fill=ring)
+        d.line([cx, cy - R, cx, cy + R], fill=ring)
+        d.text((cx + 2, cy - R - 1), "N", font=f_body, fill=(0, 180, 0))
+
+        # Blips: north-up, bearing/distance -> (x,y).
         max_km = config.SEARCH_RADIUS_KM
         for ac in aircraft:
             rr = R * min(ac.distance_km / max_km, 1.0)
             ang = math.radians(ac.bearing_deg)
             px = cx + rr * math.sin(ang)
             py = cy - rr * math.cos(ang)
-            d.ellipse([px - 2, py - 2, px + 2, py + 2], fill=0)
+            # Color by altitude band.
+            alt = ac.altitude_ft or 0
+            if alt > 25000:
+                color = (255, 80, 80)     # high
+            elif alt > 10000:
+                color = (255, 255, 0)     # mid
+            else:
+                color = (0, 255, 0)       # low / ground
+            d.ellipse([px - 2, py - 2, px + 2, py + 2], fill=color)
+            # Heading tick (3px in track direction).
+            if ac.track is not None:
+                tr = math.radians(ac.track)
+                tx = px + 4 * math.sin(tr)
+                ty = py - 4 * math.cos(tr)
+                d.line([px, py, tx, ty], fill=color)
 
-        # Header line on the right column.
-        rx = 2 * (cx) + 4
-        if rx > W - 40:
-            rx = W // 2 + 4
-        now = datetime.now(timezone.utc).strftime("%H:%MZ")
-        d.text((rx, 1), f"ATC {len(aircraft):2d}ac {now}", font=f_tiny, fill=0)
-        d.text((rx, 1 + f_tiny.size + 1),
-               f"{loc[0]:.2f},{loc[1]:.2f} {loc[2]}", font=f_tiny, fill=0)
-
-        # Aircraft list.
-        y = 2 + 2 * (f_tiny.size + 1) + 1
-        line_h = f_small.size + 2
-        for ac in aircraft[: config.MAX_AIRCRAFT]:
+        # Footer list: top 3 nearest, very tight.
+        y = radar_bot + 1
+        line_h = 10
+        for ac in aircraft[:3]:
             if y + line_h > H:
                 break
             alt = ac.altitude_ft
             alt_s = f"{int(alt/100):03d}" if alt is not None else "---"
-            txt = f"{ac.label:<7.7} {ac.distance_km:3.0f}k FL{alt_s}"
-            d.text((rx, y), txt, font=f_small, fill=0)
+            txt = f"{ac.label:<7.7} {ac.distance_km:3.0f}km FL{alt_s}"
+            d.text((1, y), txt, font=f_body, fill=(255, 255, 255))
             y += line_h
 
         if not aircraft:
-            d.text((rx, y), "no traffic", font=f_small, fill=0)
+            d.text((1, radar_bot + 1), "no traffic in range",
+                   font=f_body, fill=(180, 180, 180))
 
-        if config.DISPLAY_ROTATE:
-            img = img.rotate(config.DISPLAY_ROTATE, expand=True)
         return img
 
     # -- output --------------------------------------------------------------
     def show(self, loc, aircraft):
         img = self._draw_frame(loc, aircraft)
         if self.mode == "hardware":
-            # Waveshare getbuffer() detects landscape-vs-portrait and rotates
-            # itself — so we hand it the image as drawn and let the driver
-            # handle the packing. Re-init each frame so the panel never gets
-            # stuck in partial/sleep mode between polls.
-            try:
-                self.epd.init()
-            except Exception as e:
-                log.debug("epd.init() failed (continuing): %s", e)
-            self.epd.display(self.epd.getbuffer(img))
+            self.device.display(img)
         else:
             img.save(config.DEV_IMAGE_PATH)
             self._print_summary(loc, aircraft)
@@ -158,8 +172,9 @@ class Display:
             print("  (no traffic in range)")
 
     def sleep(self):
-        if self.mode == "hardware" and self.epd is not None:
+        if self.mode == "hardware" and self.device is not None:
             try:
-                self.epd.sleep()
+                self.device.backlight(False)
+                self.device.cleanup()
             except Exception as e:
-                log.debug("epd.sleep failed: %s", e)
+                log.debug("device cleanup failed: %s", e)

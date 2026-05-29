@@ -52,11 +52,12 @@ HTTP_TIMEOUT = _i("ATC_HTTP_TIMEOUT", 15)
 
 
 # --- Display ----------------------------------------------------------------
-# Waveshare e-Paper panel module name, e.g. epd2in13_V4, epd2in7, epd2in9_V2.
-EPD_PANEL = os.environ.get("ATC_EPD_PANEL", "epd2in13_V4")
+# Currently hardcoded for the Waveshare 1.44" LCD HAT (ST7735S, 128x128).
+# Kept for future panel selection / dev-mode tagging.
+EPD_PANEL = os.environ.get("ATC_PANEL", "st7735_1in44")
 
-# When the Waveshare lib isn't installed (e.g. dev on a laptop), render to a
-# PNG file and print a text summary instead of touching hardware.
+# When the LCD driver / hardware isn't reachable (e.g. dev on a laptop),
+# render to a PNG file and print a text summary instead of touching hardware.
 # "auto" picks hardware if available, else dev. Force with "hardware"/"dev".
 DISPLAY_MODE = os.environ.get("ATC_DISPLAY_MODE", "auto").strip().lower()
 
