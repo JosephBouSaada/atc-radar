@@ -153,7 +153,12 @@ class Display:
     def show(self, loc, aircraft):
         img = self._draw_frame(loc, aircraft)
         if self.mode == "hardware":
+            try:
+                self.device.backlight(True)
+            except Exception as e:
+                log.debug("backlight on failed: %s", e)
             self.device.display(img)
+            log.info("pushed frame: %d aircraft, %dx%d", len(aircraft), img.width, img.height)
         else:
             img.save(config.DEV_IMAGE_PATH)
             self._print_summary(loc, aircraft)
