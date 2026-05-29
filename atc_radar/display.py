@@ -131,12 +131,15 @@ class Display:
     def show(self, loc, aircraft):
         img = self._draw_frame(loc, aircraft)
         if self.mode == "hardware":
-            # e-Paper buffer expects portrait native orientation for many panels;
-            # getbuffer handles the packing. Rotate back if we swapped above.
-            buf_img = img
-            if self.epd.width < self.epd.height and img.width > img.height:
-                buf_img = img.rotate(90, expand=True)
-            self.epd.display(self.epd.getbuffer(buf_img))
+            # Waveshare getbuffer() detects landscape-vs-portrait and rotates
+            # itself — so we hand it the image as drawn and let the driver
+            # handle the packing. Re-init each frame so the panel never gets
+            # stuck in partial/sleep mode between polls.
+            try:
+                self.epd.init()
+            except Exception as e:
+                log.debug("epd.init() failed (continuing): %s", e)
+            self.epd.display(self.epd.getbuffer(img))
         else:
             img.save(config.DEV_IMAGE_PATH)
             self._print_summary(loc, aircraft)
