@@ -4,3 +4,8 @@ Pillow>=9.0
 # Hardware driver for the Waveshare 1.44" LCD HAT (ST7735S, 128x128).
 # On the Pi, this pulls in luma.core, RPi.GPIO, and spidev automatically.
 luma.lcd>=2.10
+
+# Bookworm-compatible drop-in for RPi.GPIO (the original RPi.GPIO can't do
+# edge detection on Bookworm because it uses /dev/mem). rpi-lgpio registers
+# itself as RPi.GPIO so existing imports keep working.
+rpi-lgpio>=0.4
