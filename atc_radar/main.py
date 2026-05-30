@@ -19,6 +19,7 @@ from .display import Display
 from .input import Input
 from .location import get_location
 from .traffic import get_traffic
+from .weather import get_radar_image
 
 log = logging.getLogger("atc")
 
@@ -72,26 +73,34 @@ def run():
     selected_icao = None
     loc = None
     aircraft = []
+    wx_image = None
+    wx_ts = 0
+    mode = "aircraft"             # or "weather"
     next_poll = 0.0
+    WX_POLL_INTERVAL = 300        # weather radar refreshes ~10 min upstream
 
     try:
         while _running:
             now = time.monotonic()
 
-            # Time to refresh traffic?
+            # Time to refresh data for the current mode?
             if now >= next_poll:
                 try:
                     loc = get_location()
-                    aircraft = get_traffic(loc[0], loc[1])
+                    if mode == "aircraft":
+                        aircraft = get_traffic(loc[0], loc[1])
+                        selected_icao = _resolve_selection(
+                            selected_icao, aircraft, delta=0, clear=False)
+                        next_poll = time.monotonic() + config.POLL_INTERVAL
+                    else:
+                        wx_image, wx_ts = get_radar_image(loc[0], loc[1])
+                        next_poll = time.monotonic() + WX_POLL_INTERVAL
                 except requests.RequestException as e:
                     log.warning("Network error this cycle: %s", e)
+                    next_poll = time.monotonic() + config.POLL_INTERVAL
                 except Exception:
                     log.exception("Unexpected error this cycle")
-                next_poll = time.monotonic() + config.POLL_INTERVAL
-
-                # Re-resolve selection in case the aircraft list changed.
-                selected_icao = _resolve_selection(
-                    selected_icao, aircraft, delta=0, clear=False)
+                    next_poll = time.monotonic() + config.POLL_INTERVAL
 
             # Shutdown via held KEY3 — handle before anything else.
             if inp.consume_shutdown():
@@ -107,21 +116,31 @@ def run():
                 _stop()
                 break
 
-            # Apply any pending input.
+            # Mode toggle via KEY2.
+            if inp.consume_toggle_mode():
+                mode = "weather" if mode == "aircraft" else "aircraft"
+                log.info("Mode -> %s", mode)
+                next_poll = 0.0    # force immediate fetch for the new mode
+                continue           # loop top so the new data lands before render
+
+            # Apply any pending input (aircraft mode only).
             delta = inp.consume_delta()
             clear = inp.consume_clear()
             inp.consume_press()    # reserved for future "details" view
-            if delta or clear:
+            if mode == "aircraft" and (delta or clear):
                 selected_icao = _resolve_selection(
                     selected_icao, aircraft, delta, clear)
 
-            # Render and wait either for input or for next poll.
+            # Render.
             if loc is not None:
-                display.show(loc, aircraft, selected_icao=selected_icao)
+                if mode == "aircraft":
+                    display.show(loc, aircraft, selected_icao=selected_icao)
+                else:
+                    display.show_weather(loc, wx_image, wx_ts)
 
             sleep_for = max(0.5, next_poll - time.monotonic())
             if not inp.wait(timeout=sleep_for):
-                pass   # timeout — fall through to refresh traffic
+                pass   # timeout — fall through to refresh data
     finally:
         try:
             inp.cleanup()

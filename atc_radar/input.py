@@ -47,6 +47,7 @@ class Input:
         self._clear = False
         self._press = False
         self._shutdown = False
+        self._toggle_mode = False
         self._GPIO = None
 
         try:
@@ -67,6 +68,10 @@ class Input:
                                   callback=lambda p: self._mark_clear(), bouncetime=250)
             GPIO.add_event_detect(PIN_PRESS, GPIO.FALLING,
                                   callback=lambda p: self._mark_press(), bouncetime=250)
+            # KEY2 (middle-right) = toggle aircraft / weather radar mode.
+            GPIO.add_event_detect(PIN_KEY2, GPIO.FALLING,
+                                  callback=lambda p: self._mark_toggle_mode(),
+                                  bouncetime=300)
             # KEY3 (bottom-right) = hold-to-shutdown.
             GPIO.add_event_detect(PIN_KEY3, GPIO.FALLING,
                                   callback=lambda p: self._on_shutdown_press(),
@@ -90,6 +95,11 @@ class Input:
     def _mark_press(self):
         with self._lock:
             self._press = True
+        self.event.set()
+
+    def _mark_toggle_mode(self):
+        with self._lock:
+            self._toggle_mode = True
         self.event.set()
 
     def _on_shutdown_press(self):
@@ -137,6 +147,11 @@ class Input:
         with self._lock:
             s, self._shutdown = self._shutdown, False
         return s
+
+    def consume_toggle_mode(self):
+        with self._lock:
+            t, self._toggle_mode = self._toggle_mode, False
+        return t
 
     def cleanup(self):
         if self._GPIO is None:

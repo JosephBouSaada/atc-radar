@@ -219,6 +219,57 @@ class Display:
         if not aircraft:
             print("  (no traffic in range)")
 
+    def show_weather(self, loc, wx_image, frame_ts):
+        """Render a precipitation radar frame with rings, crosshair, header."""
+        W, H = self.width, self.height
+        img = Image.new("RGB", (W, H), (0, 0, 0))
+
+        if wx_image is not None:
+            # The wx image is already sized to (W, H). Paste straight on.
+            img.paste(wx_image, (0, 0))
+
+        d = ImageDraw.Draw(img)
+        f_hdr = _font(10)
+        f_body = _font(9)
+
+        # Range rings + crosshair overlay, dim so precipitation stays readable.
+        radar_top = 12
+        radar_bot = H - 14
+        R = (radar_bot - radar_top) // 2
+        cx, cy = W // 2, radar_top + R
+        ring = (160, 160, 160)
+        d.ellipse([cx - R, cy - R, cx + R, cy + R], outline=ring)
+        d.ellipse([cx - R // 2, cy - R // 2, cx + R // 2, cy + R // 2],
+                  outline=ring)
+        d.line([cx - R, cy, cx + R, cy], fill=ring)
+        d.line([cx, cy - R, cx, cy + R], fill=ring)
+        # Center marker (our location).
+        d.ellipse([cx - 1, cy - 1, cx + 1, cy + 1], fill=(255, 255, 255))
+
+        # Header.
+        d.text((1, 0), "WX RADAR", font=f_hdr, fill=(0, 255, 255))
+        if frame_ts:
+            ts = datetime.fromtimestamp(frame_ts, tz=timezone.utc)
+            d.text((W - 38, 0), ts.strftime("%H:%MZ"),
+                   font=f_hdr, fill=(0, 255, 255))
+        else:
+            d.text((W - 38, 0), "--:--", font=f_hdr, fill=(120, 120, 120))
+
+        # Footer: radius label.
+        d.text((1, H - 12), f"{int(config.SEARCH_RADIUS_KM)}km radius",
+               font=f_body, fill=(180, 180, 180))
+
+        if self.mode == "hardware":
+            try:
+                self.device.backlight(True)
+            except Exception:
+                pass
+            self.device.display(img)
+            log.info("pushed wx frame: %dx%d", img.width, img.height)
+        else:
+            img.save(config.DEV_IMAGE_PATH)
+            log.info("Dev wx frame written to %s", config.DEV_IMAGE_PATH)
+
     def show_message(self, text, color=(255, 255, 255)):
         """Render a centered single-line message (used for shutdown notice)."""
         W, H = self.width, self.height
