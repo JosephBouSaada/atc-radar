@@ -8,6 +8,7 @@ stays on the same aircraft across traffic refreshes.
 
 import logging
 import signal
+import subprocess
 import sys
 import time
 
@@ -91,6 +92,20 @@ def run():
                 # Re-resolve selection in case the aircraft list changed.
                 selected_icao = _resolve_selection(
                     selected_icao, aircraft, delta=0, clear=False)
+
+            # Shutdown via held KEY3 — handle before anything else.
+            if inp.consume_shutdown():
+                log.warning("Initiating system shutdown")
+                try:
+                    display.show_message("shutting down...", color=(255, 80, 80))
+                except Exception:
+                    pass
+                subprocess.Popen(
+                    ["sudo", "shutdown", "-h", "now"],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                )
+                _stop()
+                break
 
             # Apply any pending input.
             delta = inp.consume_delta()

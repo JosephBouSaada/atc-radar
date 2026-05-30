@@ -219,6 +219,27 @@ class Display:
         if not aircraft:
             print("  (no traffic in range)")
 
+    def show_message(self, text, color=(255, 255, 255)):
+        """Render a centered single-line message (used for shutdown notice)."""
+        W, H = self.width, self.height
+        img = Image.new("RGB", (W, H), (0, 0, 0))
+        d = ImageDraw.Draw(img)
+        f = _font(12)
+        try:
+            l, t, r, b = d.textbbox((0, 0), text, font=f)
+            tw, th = r - l, b - t
+        except AttributeError:
+            tw, th = d.textsize(text, font=f)
+        d.text(((W - tw) // 2, (H - th) // 2), text, font=f, fill=color)
+        if self.mode == "hardware":
+            try:
+                self.device.backlight(True)
+            except Exception:
+                pass
+            self.device.display(img)
+        else:
+            img.save(config.DEV_IMAGE_PATH)
+
     def sleep(self):
         if self.mode == "hardware" and self.device is not None:
             try:

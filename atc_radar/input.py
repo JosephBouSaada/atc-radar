@@ -6,6 +6,7 @@ All inputs are active-low with internal pull-ups enabled.
 
 import logging
 import threading
+import time
 
 log = logging.getLogger("atc.input")
 
@@ -35,6 +36,9 @@ class Input:
             ...                     # LEFT pressed -> clear selection
     """
 
+    # Hold KEY3 this long to trigger a shutdown.
+    SHUTDOWN_HOLD_SECONDS = 2.0
+
     def __init__(self):
         self.ok = False
         self.event = threading.Event()
@@ -42,6 +46,7 @@ class Input:
         self._delta = 0
         self._clear = False
         self._press = False
+        self._shutdown = False
         self._GPIO = None
 
         try:
@@ -62,6 +67,10 @@ class Input:
                                   callback=lambda p: self._mark_clear(), bouncetime=250)
             GPIO.add_event_detect(PIN_PRESS, GPIO.FALLING,
                                   callback=lambda p: self._mark_press(), bouncetime=250)
+            # KEY3 (bottom-right) = hold-to-shutdown.
+            GPIO.add_event_detect(PIN_KEY3, GPIO.FALLING,
+                                  callback=lambda p: self._on_shutdown_press(),
+                                  bouncetime=250)
             self.ok = True
             log.info("Joystick input ready")
         except Exception as e:
@@ -82,6 +91,24 @@ class Input:
         with self._lock:
             self._press = True
         self.event.set()
+
+    def _on_shutdown_press(self):
+        """KEY3 fell. Watch until it's released or held long enough to act."""
+        threading.Thread(target=self._watch_shutdown_hold, daemon=True).start()
+
+    def _watch_shutdown_hold(self):
+        time.sleep(self.SHUTDOWN_HOLD_SECONDS)
+        # Active-low: pressed == 0. If still down after the hold time, fire.
+        try:
+            still_down = self._GPIO.input(PIN_KEY3) == 0
+        except Exception:
+            still_down = False
+        if still_down:
+            log.warning("KEY3 held %.1fs — shutdown requested",
+                        self.SHUTDOWN_HOLD_SECONDS)
+            with self._lock:
+                self._shutdown = True
+            self.event.set()
 
     # -- consumer API --------------------------------------------------------
     def wait(self, timeout):
@@ -105,6 +132,11 @@ class Input:
         with self._lock:
             p, self._press = self._press, False
         return p
+
+    def consume_shutdown(self):
+        with self._lock:
+            s, self._shutdown = self._shutdown, False
+        return s
 
     def cleanup(self):
         if self._GPIO is None:
