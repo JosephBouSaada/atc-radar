@@ -58,7 +58,7 @@ class Input:
                                   callback=lambda p: self._bump(+1), bouncetime=180)
             GPIO.add_event_detect(PIN_LEFT,  GPIO.FALLING,
                                   callback=lambda p: self._mark_clear(), bouncetime=250)
-            GPIO.add_event_detect(PIN_KEY3,  GPIO.FALLING,
+            GPIO.add_event_detect(PIN_KEY1,  GPIO.FALLING,
                                   callback=lambda p: self._mark_clear(), bouncetime=250)
             GPIO.add_event_detect(PIN_PRESS, GPIO.FALLING,
                                   callback=lambda p: self._mark_press(), bouncetime=250)
