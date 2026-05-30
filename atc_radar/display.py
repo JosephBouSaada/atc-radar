@@ -81,18 +81,34 @@ class Display:
                 self.mode = "dev"
 
     # -- drawing -------------------------------------------------------------
-    def _draw_frame(self, loc, aircraft):
+    @staticmethod
+    def _alt_color(alt_ft):
+        a = alt_ft or 0
+        if a > 25000:
+            return (255, 80, 80)
+        if a > 10000:
+            return (255, 255, 0)
+        return (0, 255, 0)
+
+    @staticmethod
+    def _dim(rgb, factor=0.4):
+        return tuple(int(c * factor) for c in rgb)
+
+    def _draw_frame(self, loc, aircraft, selected_icao=None):
         W, H = self.width, self.height
         img = Image.new("RGB", (W, H), (0, 0, 0))
         d = ImageDraw.Draw(img)
 
         f_hdr = _font(10)
         f_body = _font(9)
+        has_sel = selected_icao is not None and any(
+            a.icao24 == selected_icao for a in aircraft)
 
-        # Header: count + UTC time.
+        # Header: count + UTC time (cyan, dimmed if a selection is active).
         now = datetime.now(timezone.utc).strftime("%H:%MZ")
-        d.text((1, 0), f"ATC {len(aircraft):2d}ac", font=f_hdr, fill=(0, 255, 255))
-        d.text((W - 38, 0), now, font=f_hdr, fill=(0, 255, 255))
+        hdr_col = (0, 255, 255) if not has_sel else self._dim((0, 255, 255))
+        d.text((1, 0), f"ATC {len(aircraft):2d}ac", font=f_hdr, fill=hdr_col)
+        d.text((W - 38, 0), now, font=f_hdr, fill=hdr_col)
 
         # Radar area — square, fills middle of screen.
         radar_top = 12
@@ -106,41 +122,68 @@ class Display:
         d.ellipse([cx - R // 2, cy - R // 2, cx + R // 2, cy + R // 2], outline=ring)
         d.line([cx - R, cy, cx + R, cy], fill=ring)
         d.line([cx, cy - R, cx, cy + R], fill=ring)
-        d.text((cx + 2, cy - R - 1), "N", font=f_body, fill=(0, 180, 0))
+        d.text((cx + 2, cy - R - 1), "N", font=f_body,
+               fill=(0, 180, 0) if not has_sel else self._dim((0, 180, 0)))
 
-        # Blips: north-up, bearing/distance -> (x,y).
+        # Blips: north-up, bearing/distance -> (x,y). Draw non-selected first
+        # so the selected one ends up on top.
         max_km = config.SEARCH_RADIUS_KM
+        sel_ac = None
+        sel_pos = None
         for ac in aircraft:
             rr = R * min(ac.distance_km / max_km, 1.0)
             ang = math.radians(ac.bearing_deg)
             px = cx + rr * math.sin(ang)
             py = cy - rr * math.cos(ang)
-            # Color by altitude band.
-            alt = ac.altitude_ft or 0
-            if alt > 25000:
-                color = (255, 80, 80)     # high
-            elif alt > 10000:
-                color = (255, 255, 0)     # mid
-            else:
-                color = (0, 255, 0)       # low / ground
+            base = self._alt_color(ac.altitude_ft)
+            selected = has_sel and ac.icao24 == selected_icao
+            if selected:
+                sel_ac, sel_pos = ac, (px, py, base)
+                continue
+            color = self._dim(base) if has_sel else base
             d.ellipse([px - 2, py - 2, px + 2, py + 2], fill=color)
-            # Heading tick (3px in track direction).
             if ac.track is not None:
                 tr = math.radians(ac.track)
-                tx = px + 4 * math.sin(tr)
-                ty = py - 4 * math.cos(tr)
-                d.line([px, py, tx, ty], fill=color)
+                d.line([px, py,
+                        px + 4 * math.sin(tr), py - 4 * math.cos(tr)],
+                       fill=color)
 
-        # Footer list: top 3 nearest, very tight.
+        if sel_pos is not None:
+            px, py, base = sel_pos
+            # Halo + larger filled blip at full brightness.
+            d.ellipse([px - 4, py - 4, px + 4, py + 4], outline=(255, 255, 255))
+            d.ellipse([px - 2, py - 2, px + 2, py + 2], fill=base)
+            if sel_ac.track is not None:
+                tr = math.radians(sel_ac.track)
+                d.line([px, py,
+                        px + 6 * math.sin(tr), py - 6 * math.cos(tr)],
+                       fill=base, width=2)
+
+        # Footer list: 3 rows, scrolled to keep the selected aircraft visible.
+        rows = 3
+        if has_sel:
+            sel_idx = next(i for i, a in enumerate(aircraft)
+                           if a.icao24 == selected_icao)
+            start = max(0, min(sel_idx - 1, len(aircraft) - rows))
+        else:
+            start = 0
+        visible = aircraft[start:start + rows]
+
         y = radar_bot + 1
         line_h = 10
-        for ac in aircraft[:3]:
+        for ac in visible:
             if y + line_h > H:
                 break
             alt = ac.altitude_ft
             alt_s = f"{int(alt/100):03d}" if alt is not None else "---"
-            txt = f"{ac.label:<7.7} {ac.distance_km:3.0f}km FL{alt_s}"
-            d.text((1, y), txt, font=f_body, fill=(255, 255, 255))
+            selected = has_sel and ac.icao24 == selected_icao
+            marker = ">" if selected else " "
+            txt = f"{marker}{ac.label:<6.6} {ac.distance_km:3.0f}km FL{alt_s}"
+            if has_sel and not selected:
+                fg = (102, 102, 102)            # 40% white
+            else:
+                fg = (255, 255, 255)
+            d.text((1, y), txt, font=f_body, fill=fg)
             y += line_h
 
         if not aircraft:
@@ -150,8 +193,8 @@ class Display:
         return img
 
     # -- output --------------------------------------------------------------
-    def show(self, loc, aircraft):
-        img = self._draw_frame(loc, aircraft)
+    def show(self, loc, aircraft, selected_icao=None):
+        img = self._draw_frame(loc, aircraft, selected_icao=selected_icao)
         if self.mode == "hardware":
             try:
                 self.device.backlight(True)

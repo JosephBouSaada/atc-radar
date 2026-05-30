@@ -1,4 +1,10 @@
-"""Main polling loop: locate -> fetch traffic -> render -> repeat."""
+"""Main polling loop: locate -> fetch traffic -> render -> repeat.
+
+The joystick lets the user pick one aircraft from the sorted list. The
+selected aircraft renders at full brightness on the radar and footer list;
+the others dim to 40%. Selection is tracked by ICAO24 so the highlight
+stays on the same aircraft across traffic refreshes.
+"""
 
 import logging
 import signal
@@ -9,6 +15,7 @@ import requests
 
 from . import config
 from .display import Display
+from .input import Input
 from .location import get_location
 from .traffic import get_traffic
 
@@ -22,6 +29,32 @@ def _stop(*_):
     _running = False
 
 
+def _resolve_selection(selected_icao, aircraft, delta, clear):
+    """Apply joystick input to the selection. Returns new selected_icao."""
+    if not aircraft:
+        return None
+    if clear:
+        return None
+
+    if selected_icao is None:
+        # First UP/DOWN press: enter selection at the nearest aircraft.
+        if delta != 0:
+            return aircraft[0].icao24
+        return None
+
+    # Find current selection in the (possibly new) list.
+    try:
+        idx = next(i for i, a in enumerate(aircraft)
+                   if a.icao24 == selected_icao)
+    except StopIteration:
+        # Previously-selected aircraft is gone from this poll. Reset to top
+        # if the user is still interacting; else clear.
+        return aircraft[0].icao24 if delta != 0 else None
+
+    new_idx = max(0, min(idx + delta, len(aircraft) - 1))
+    return aircraft[new_idx].icao24
+
+
 def run():
     logging.basicConfig(
         level=logging.INFO,
@@ -31,30 +64,55 @@ def run():
     signal.signal(signal.SIGTERM, _stop)
 
     display = Display()
-    log.info("Display mode: %s", display.mode)
+    inp = Input()
+    log.info("Display mode: %s   input: %s",
+             display.mode, "on" if inp.ok else "off")
+
+    selected_icao = None
+    loc = None
+    aircraft = []
+    next_poll = 0.0
 
     try:
         while _running:
-            start = time.monotonic()
-            try:
-                loc = get_location()
-                aircraft = get_traffic(loc[0], loc[1])
-                display.show(loc, aircraft)
-            except requests.RequestException as e:
-                log.warning("Network error this cycle: %s", e)
-            except Exception:
-                log.exception("Unexpected error this cycle")
+            now = time.monotonic()
 
-            elapsed = time.monotonic() - start
-            sleep_for = max(1.0, config.POLL_INTERVAL - elapsed)
-            # Wake promptly on signal instead of sleeping the whole interval.
-            while _running and sleep_for > 0:
-                step = min(1.0, sleep_for)
-                time.sleep(step)
-                sleep_for -= step
+            # Time to refresh traffic?
+            if now >= next_poll:
+                try:
+                    loc = get_location()
+                    aircraft = get_traffic(loc[0], loc[1])
+                except requests.RequestException as e:
+                    log.warning("Network error this cycle: %s", e)
+                except Exception:
+                    log.exception("Unexpected error this cycle")
+                next_poll = time.monotonic() + config.POLL_INTERVAL
+
+                # Re-resolve selection in case the aircraft list changed.
+                selected_icao = _resolve_selection(
+                    selected_icao, aircraft, delta=0, clear=False)
+
+            # Apply any pending input.
+            delta = inp.consume_delta()
+            clear = inp.consume_clear()
+            inp.consume_press()    # reserved for future "details" view
+            if delta or clear:
+                selected_icao = _resolve_selection(
+                    selected_icao, aircraft, delta, clear)
+
+            # Render and wait either for input or for next poll.
+            if loc is not None:
+                display.show(loc, aircraft, selected_icao=selected_icao)
+
+            sleep_for = max(0.5, next_poll - time.monotonic())
+            if not inp.wait(timeout=sleep_for):
+                pass   # timeout — fall through to refresh traffic
     finally:
-        display.sleep()
-        log.info("Shutting down")
+        try:
+            inp.cleanup()
+        finally:
+            display.sleep()
+            log.info("Shutting down")
 
 
 if __name__ == "__main__":
